@@ -10,78 +10,64 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
 
-# Connected WebSocket clients
 clients = set()
 
-# Configurable via environment variables
 PARQUET_FILE = os.getenv("PARQUET_FILE", "trades_sample.parquet")
-SPEED = float(os.getenv("SPEED", "10.0"))  # 1.0 = realtime, >1 faster
+SPEED = float(os.getenv("SPEED", "1.0"))  # 1.0 = realtime, >1 faster
+MIN_DELAY = float(os.getenv("MIN_DELAY", "0.0"))  # seconds
 
-def load_batches() -> List[Tuple[datetime, list]]:
-    print("DEBUG: starting load_batches()")
-    table = pq.read_table(PARQUET_FILE)
-    print("DEBUG: parquet read complete")
-    df = table.to_pandas()
-    print("DEBUG: converted to pandas")
-    """Load and group trades by exact timestamp."""
-    table = pq.read_table(PARQUET_FILE)
-    df = table.to_pandas()
-
-    # Ensure timestamp is datetime with UTC
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-
-    # Sort chronologically
-    df = df.sort_values("timestamp")
-
-    # Group trades with identical timestamps
-    batches = []
+async def replay_trades(df: pd.DataFrame):
+    """Replay trades to all connected clients, grouping lazily."""
+    prev_ts = None
     for ts, group in df.groupby("timestamp", sort=True):
-        trades = group.to_dict(orient="records")
-        batches.append((ts, trades))
-    return batches
-
-async def replay_trades():
-    """Replay trades to all connected clients."""
-    batches = load_batches()
-    if not batches:
-        return
-
-    prev_ts = batches[0][0]
-    for ts, trades in batches:
-        # Sleep according to time delta / SPEED
-        delta = (ts - prev_ts).total_seconds() / SPEED
-        if delta > 0:
-            await asyncio.sleep(delta)
+        if prev_ts is not None:
+            delta = (ts - prev_ts).total_seconds() / SPEED
+            # Enforce a minimum delay for readability
+            sleep_s = max(MIN_DELAY, delta)
+            if sleep_s > 0:
+                await asyncio.sleep(sleep_s)
         prev_ts = ts
 
         message = json.dumps({
             "type": "trades",
             "timestamp": ts.isoformat(),
-            "trades": trades
+            "trades": group.to_dict(orient="records")
         }, default=str)
 
-        # Broadcast to all clients
         for ws in list(clients):
             try:
                 await ws.send_text(message)
             except Exception:
                 clients.remove(ws)
 
+# We'll store the DataFrame globally after loading
+trade_df: pd.DataFrame = pd.DataFrame()
+
+def load_dataframe() -> pd.DataFrame:
+    """Load and sort trades from Parquet without grouping."""
+    print(f"DEBUG: loading parquet file {PARQUET_FILE}")
+    table = pq.read_table(PARQUET_FILE)
+    df = table.to_pandas()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    print(f"DEBUG: loaded {len(df)} rows")
+    return df
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    """Handle WebSocket connections."""
     await ws.accept()
     clients.add(ws)
     try:
         while True:
-            await ws.receive_text()  # keep connection alive
+            await ws.receive_text()  # keep alive
     except WebSocketDisconnect:
         clients.remove(ws)
 
 @app.on_event("startup")
 async def startup_event():
+    global trade_df
     print("DEBUG: startup_event called")
-    batches = load_batches()
-    print(f"DEBUG: loaded {len(batches)} batches")
-    asyncio.create_task(replay_trades())
+    trade_df = load_dataframe()
+    # Start replay in background so startup completes immediately
+    asyncio.create_task(replay_trades(trade_df))
     print("DEBUG: replay task started")
