@@ -10,3 +10,5 @@ This service replays historical trades from a Parquet file over a WebSocket conn
 ## Usage
 1. Install dependencies:
 pip install -r requirements.txt
+2. Run: `uvicorn main:app --reload`
+3. Run: `python3 client.py`
