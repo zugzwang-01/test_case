@@ -1,4 +1,4 @@
-# **TASK1 - Trade Replay WebSocket Service**
+# **Task 1 - Trade Replay WebSocket Service**
 
 This service replays historical trades from a Parquet file over a WebSocket connection.
 
