@@ -1,4 +1,4 @@
-# *Task 1 — Funding Rate Strategy Backtest*
+# **Task 1 — Funding Rate Strategy Backtest**
 
 ## Overview
 Backtested three trading strategies on cryptocurrency perpetual swap **funding rate** data from Hyperliquid and OKEX to identify profitable patterns.
